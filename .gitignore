@@ -1,0 +1,21 @@
+# OCaml build artifacts
+_build/
+*.native
+*.byte
+*.o
+*.cmo
+*.cmi
+*.cmx
+*.cma
+*.cmxa
+*.a
+*.s
+
+# Editor temporary files
+.DS_Store
+.vscode/
+*.swp
+
+# Cigrid specific
+cigrid      
+output      
