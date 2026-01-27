@@ -20,51 +20,12 @@ module StringMap = Map.Make(String)
 
 type var_env = ty StringMap.t  (* Maps variable names to their types *)
 type func_env = (ty * ty list) StringMap.t  (* Maps function names to (return_type, param_types) *)
-(* Map struct name to its fields (ty * name list) *)
 type struct_env = (struct_field list) StringMap.t
 
-(* Source lines for heuristic line reporting *)
-let source_lines : string array ref = ref [||]
-let set_source_lines (lines: string array) = source_lines := lines
+(* ============================================================ *)
+(* Type validation and struct field lookup *)
+(* ============================================================ *)
 
-let contains_substring (s: string) (sub: string) : bool =
-  let len_s = String.length s and len_sub = String.length sub in
-  if len_sub = 0 then true
-  else
-    let rec loop i =
-      if i + len_sub > len_s then false
-      else if String.sub s i len_sub = sub then true
-      else loop (i + 1)
-    in
-    loop 0
-
-let guess_error_line (msg: string) : int option =
-  (* We prefer to emit no line when unknown; caller will omit fallback. *)
-  let lines = !source_lines in
-  if lines = [||] then None else
-  if String.starts_with ~prefix:"Duplicate parameter name: " msg then (
-    let name = String.sub msg 26 (String.length msg - 26) in
-    let rec find idx =
-      if idx >= Array.length lines then None
-      else if contains_substring lines.(idx) name then Some (idx + 1)
-      else find (idx + 1)
-    in find 0)
-  else if String.starts_with ~prefix:"Unknown field '" msg then (
-    (* msg format: Unknown field '<field>' in struct <Struct> *)
-    let start = 14 in
-    let next_quote = try String.index_from msg start '\'' with Not_found -> String.length msg in
-    let len = max 0 (next_quote - start) in
-    let field = String.sub msg start len in
-    let needle = "." ^ field in
-    let rec find idx =
-      if idx >= Array.length lines then None
-      else if contains_substring lines.(idx) needle then Some (idx + 1)
-      else find (idx + 1)
-    in find 0)
-  else
-    None
-
-(* Validate that a type is well-formed w.r.t struct environment *)
 let rec validate_type (struct_env: struct_env) (t: ty) : unit =
   match t with
   | TInt | TChar | TVoid -> ()
@@ -75,25 +36,13 @@ let rec validate_type (struct_env: struct_env) (t: ty) : unit =
   | TArray (t', _) -> validate_type struct_env t'
 
 (* Lookup a struct field's type, raising a TypeError if missing *)
-let lookup_struct_field (struct_env: struct_env) (struct_name: string) (field: string) : ty =
+let lookup_struct_field (struct_env: struct_env) (struct_name: string) (field: string) (line: int) : ty =
   match StringMap.find_opt struct_name struct_env with
-  | None -> raise (TypeError ("Unknown struct: " ^ struct_name, 0))
+  | None -> raise (TypeError ("Unknown struct: " ^ struct_name, line))
   | Some fields ->
       let rec find_field lst =
         match lst with
-        | [] -> raise (TypeError ("Unknown field '" ^ field ^ "' in struct " ^ struct_name, 0))
-        | (fty, fname) :: tl -> if fname = field then fty else find_field tl
-      in
-      find_field fields
-
-(* Lookup a struct field's type, raising a TypeError if missing *)
-let lookup_struct_field (struct_env: struct_env) (struct_name: string) (field: string) : ty =
-  match StringMap.find_opt struct_name struct_env with
-  | None -> raise (TypeError ("Unknown struct: " ^ struct_name, 0))
-  | Some fields ->
-      let rec find_field lst =
-        match lst with
-        | [] -> raise (TypeError ("Unknown field '" ^ field ^ "' in struct " ^ struct_name, 0))
+        | [] -> raise (TypeError ("Unknown field '" ^ field ^ "' in struct " ^ struct_name, line))
         | (fty, fname) :: tl -> if fname = field then fty else find_field tl
       in
       find_field fields
@@ -107,19 +56,14 @@ let check_var_defined (env: var_env) (name: string) (line: int) : unit =
   if not (StringMap.mem name env) then
     raise (NameError ("Undefined variable: " ^ name, line))
 
-(* Extract line number from an expression (simplified) *)
+(* Extract line number from an expression *)
 let rec get_expr_line (e: expr) : int =
   match e with
-  | EInt _ -> 0  (* Literals don't have meaningful line numbers in our AST *)
-  | EChar _ -> 0
-  | EString _ -> 0
-  | EVar _ -> 0
   | EAt (_, line) -> line
   | EBinOp (_, e1, _) -> get_expr_line e1
   | EUnOp (_, e1) -> get_expr_line e1
   | _ -> 0
 
-(* Check expression for undefined variables *)
 let rec check_expr_names (env: var_env) (e: expr) : unit =
   match e with
   | EInt _ | EChar _ | EString _ -> ()
@@ -134,7 +78,6 @@ let rec check_expr_names (env: var_env) (e: expr) : unit =
   | EParen e ->
       check_expr_names env e
   | ECall (fname, args) ->
-      (* For name analysis only, we don't check function names *)
       List.iter (check_expr_names env) args
   | ENew (_, e) ->
       check_expr_names env e
@@ -144,79 +87,74 @@ let rec check_expr_names (env: var_env) (e: expr) : unit =
   | EFieldAccess (e, _) ->
       check_expr_names env e
 
-(* Check statement for undefined variables *)
 let rec check_stmt_names (env: var_env) (s: stmt) : var_env =
   match s with
-  | SExpr e ->
+  | SExpr (e, loc) ->
       check_expr_names env e;
       env
-  | SVarDef (ty, name, Some e) ->
+  | SVarDef (ty, name, Some e, loc) ->
       check_expr_names env e;
-      StringMap.add name ty env  (* Add new variable to environment *)
-  | SVarDef (ty, name, None) ->
       StringMap.add name ty env
-  | SAssign (name, e) ->
-      check_var_defined env name 0;
+  | SVarDef (ty, name, None, loc) ->
+      StringMap.add name ty env
+  | SAssign (name, e, loc) ->
+      check_var_defined env name loc.line;
       check_expr_names env e;
       env
-  | SArrayAssign (name, index, _, e) ->
-      check_var_defined env name 0;
+  | SArrayAssign (name, index, _, e, loc) ->
+      check_var_defined env name loc.line;
       check_expr_names env index;
       check_expr_names env e;
       env
-  | SFieldAssign (name, _, e) ->
-      check_var_defined env name 0;
+  | SFieldAssign (name, _, e, loc) ->
+      check_var_defined env name loc.line;
       check_expr_names env e;
       env
-  | SDelete name ->
-      check_var_defined env name 0;
+  | SDelete (name, loc) ->
+      check_var_defined env name loc.line;
       env
-  | SReturn (Some e) ->
+  | SReturn (Some e, loc) ->
       check_expr_names env e;
       env
-  | SReturn None ->
+  | SReturn (None, loc) ->
       env
-  | SIf (cond, then_stmt, None) ->
+  | SIf (cond, then_stmt, None, loc) ->
       check_expr_names env cond;
       let _ = check_stmt_names env then_stmt in
       env
-  | SIf (cond, then_stmt, Some else_stmt) ->
+  | SIf (cond, then_stmt, Some else_stmt, loc) ->
       check_expr_names env cond;
       let _ = check_stmt_names env then_stmt in
       let _ = check_stmt_names env else_stmt in
       env
-  | SWhile (cond, body) ->
+  | SWhile (cond, body, loc) ->
       check_expr_names env cond;
       let _ = check_stmt_names env body in
       env
-  | SFor (init, cond, inc, body) ->
+  | SFor (init, cond, inc, body, loc) ->
       let env1 = match init with Some s -> check_stmt_names env s | None -> env in
       (match cond with Some e -> check_expr_names env1 e | None -> ());
       (match inc with Some s -> let _ = check_stmt_names env1 s in () | None -> ());
       let _ = check_stmt_names env1 body in
       env
-  | SBreak ->
+  | SBreak loc ->
       env
-  | SBlock stmts ->
+  | SBlock (stmts, loc) ->
       let _ = List.fold_left check_stmt_names env stmts in
       env
 
-(* Check function definition for name analysis *)
 let check_func_names (func: global_def) : unit =
   match func with
   | GFuncDef (_, _, params, body) ->
-      (* Build environment with parameters *)
       let env = List.fold_left 
         (fun acc (ty, name) -> StringMap.add name ty acc) 
         StringMap.empty 
         params 
       in
-      (* Check function body *)
       let _ = check_stmt_names env body in
       ()
   | _ -> ()
 
-(* Main entry point for name analysis *)
 let analyze_names (prog: global_def list) : unit =
   List.iter check_func_names prog
 
@@ -224,7 +162,6 @@ let analyze_names (prog: global_def list) : unit =
 (* Type Checking (Task 3.2) *)
 (* ============================================================ *)
 
-(* Check if two types are compatible *)
 let rec types_equal (t1: ty) (t2: ty) : bool =
   match t1, t2 with
   | TInt, TInt -> true
@@ -238,13 +175,12 @@ let rec types_equal (t1: ty) (t2: ty) : bool =
   | TIdent s1, TStruct s2 -> s1 = s2
   | _ -> false
 
-(* Get the type of an expression *)
 let rec type_of_expr ?(line=0) (var_env: var_env) (func_env: func_env) (struct_env: struct_env) (e: expr) : ty =
   match e with
   | EAt (inner, l) -> type_of_expr ~line:l var_env func_env struct_env inner
   | EInt _ -> TInt
   | EChar _ -> TChar
-  | EString _ -> TPtr TChar  (* String literals are char* *)
+  | EString _ -> TPtr TChar
   | EVar name ->
     (try StringMap.find name var_env
      with Not_found -> raise (NameError ("Undefined variable: " ^ name, line)))
@@ -309,104 +245,122 @@ let rec type_of_expr ?(line=0) (var_env: var_env) (func_env: func_env) (struct_e
      | None -> elem_ty
      | Some field ->
        (match elem_ty with
-        | TStruct s | TIdent s -> lookup_struct_field struct_env s field
+        | TStruct s | TIdent s -> lookup_struct_field struct_env s field line
         | _ -> raise (TypeError ("Field access on non-struct array element", line))))
     with Not_found -> raise (NameError ("Undefined variable: " ^ name, line)))
   | EFieldAccess (e, field) ->
     let t = type_of_expr ~line var_env func_env struct_env e in
     (match t with
-     | TStruct s | TIdent s -> lookup_struct_field struct_env s field
+     | TStruct s | TIdent s -> lookup_struct_field struct_env s field line
      | _ -> raise (TypeError ("Field access on non-struct value", line)))
 
-(* Type check a statement *)
-let rec type_check_stmt (var_env: var_env) (func_env: func_env) (struct_env: struct_env) (s: stmt) : var_env =
+let rec type_check_stmt (var_env: var_env) (func_env: func_env) (struct_env: struct_env) (expected_ret_ty: ty) (s: stmt) : var_env =
   match s with
-  | SExpr e ->
+  | SExpr (e, loc) ->
       let _ = type_of_expr var_env func_env struct_env e in
       var_env
-  | SVarDef (ty, name, Some e) ->
+  | SVarDef (ty, name, Some e, loc) ->
       validate_type struct_env ty;
       let expr_ty = type_of_expr var_env func_env struct_env e in
       if not (types_equal ty expr_ty) then
-        raise (TypeError ("Type mismatch in variable declaration", 0));
+        raise (TypeError ("Type mismatch in variable declaration", loc.line));
       StringMap.add name ty var_env
-  | SVarDef (ty, name, None) ->
+  | SVarDef (ty, name, None, loc) ->
       validate_type struct_env ty;
       StringMap.add name ty var_env
-  | SAssign (name, e) ->
+  | SAssign (name, e, loc) ->
       let var_ty = (try StringMap.find name var_env 
-                    with Not_found -> raise (NameError ("Undefined variable: " ^ name, 0))) in
+                    with Not_found -> raise (NameError ("Undefined variable: " ^ name, loc.line))) in
       let expr_ty = type_of_expr var_env func_env struct_env e in
       if not (types_equal var_ty expr_ty) then
-        raise (TypeError ("Type mismatch in assignment", 0));
+        raise (TypeError ("Type mismatch in assignment", loc.line));
       var_env
-  | SArrayAssign (name, index, field_opt, e) ->
+  | SArrayAssign (name, index, field_opt, e, loc) ->
       let idx_ty = type_of_expr var_env func_env struct_env index in
       if not (types_equal idx_ty TInt) then
-        raise (TypeError ("Array index must be int", 0));
+        raise (TypeError ("Array index must be int", loc.line));
       let var_ty = (try StringMap.find name var_env
-                    with Not_found -> raise (NameError ("Undefined variable: " ^ name, 0))) in
+                    with Not_found -> raise (NameError ("Undefined variable: " ^ name, loc.line))) in
       let elem_ty =
         match var_ty with
         | TArray (elem_ty, _) -> elem_ty
         | TPtr elem_ty -> elem_ty
-        | _ -> raise (TypeError ("Array assignment on non-array type", 0))
+        | _ -> raise (TypeError ("Array assignment on non-array type", loc.line))
       in
       (match field_opt with
        | None ->
            let expr_ty = type_of_expr var_env func_env struct_env e in
            if not (types_equal elem_ty expr_ty) then
-             raise (TypeError ("Type mismatch in array assignment", 0));
+             raise (TypeError ("Type mismatch in array assignment", loc.line));
            var_env
        | Some field ->
            (match elem_ty with
             | TStruct s | TIdent s ->
-                let field_ty = lookup_struct_field struct_env s field in
+                let field_ty = lookup_struct_field struct_env s field loc.line in
                 let expr_ty = type_of_expr var_env func_env struct_env e in
                 if not (types_equal field_ty expr_ty) then
-                  raise (TypeError ("Type mismatch in struct field assignment", 0));
+                  raise (TypeError ("Type mismatch in struct field assignment", loc.line));
                 var_env
-            | _ -> raise (TypeError ("Field assignment on non-struct array element", 0))))
-  | SFieldAssign (name, field, e) ->
+            | _ -> raise (TypeError ("Field assignment on non-struct array element", loc.line))))
+  | SFieldAssign (name, field, e, loc) ->
       let var_ty = (try StringMap.find name var_env
-                    with Not_found -> raise (NameError ("Undefined variable: " ^ name, 0))) in
+                    with Not_found -> raise (NameError ("Undefined variable: " ^ name, loc.line))) in
       (match var_ty with
        | TStruct s | TIdent s ->
-           let field_ty = lookup_struct_field struct_env s field in
+           let field_ty = lookup_struct_field struct_env s field loc.line in
            let expr_ty = type_of_expr var_env func_env struct_env e in
            if not (types_equal field_ty expr_ty) then
-             raise (TypeError ("Type mismatch in struct field assignment", 0));
+             raise (TypeError ("Type mismatch in struct field assignment", loc.line));
            var_env
-       | _ -> raise (TypeError ("Field assignment on non-struct variable", 0)))
-  | SDelete name ->
+       | _ -> raise (TypeError ("Field assignment on non-struct variable", loc.line)))
+  | SDelete (name, loc) ->
       let _ = (try StringMap.find name var_env 
-               with Not_found -> raise (NameError ("Undefined variable: " ^ name, 0))) in
+               with Not_found -> raise (NameError ("Undefined variable: " ^ name, loc.line))) in
       var_env
-  | SReturn (Some e) ->
-      let _ = type_of_expr var_env func_env struct_env e in
+  | SReturn (Some e, loc) ->
+      let actual_ty = type_of_expr var_env func_env struct_env e in
+      if not (types_equal actual_ty expected_ret_ty) then
+        raise (TypeError ("Return type mismatch: expected " ^ 
+                         (match expected_ret_ty with 
+                          | TInt -> "int" 
+                          | TChar -> "char" 
+                          | TVoid -> "void"
+                          | TPtr _ -> "pointer"
+                          | TStruct s | TIdent s -> s
+                          | _ -> "unknown") ^ 
+                         " but got " ^
+                         (match actual_ty with 
+                          | TInt -> "int" 
+                          | TChar -> "char" 
+                          | TVoid -> "void"
+                          | TPtr _ -> "pointer"
+                          | TStruct s | TIdent s -> s
+                          | _ -> "unknown"), loc.line));
       var_env
-  | SReturn None ->
+  | SReturn (None, loc) ->
+      if not (types_equal expected_ret_ty TVoid) then
+        raise (TypeError ("Non-void function must return a value", loc.line));
       var_env
-  | SIf (cond, then_stmt, else_opt) ->
+  | SIf (cond, then_stmt, else_opt, loc) ->
       let _ = type_of_expr var_env func_env struct_env cond in
-      let _ = type_check_stmt var_env func_env struct_env then_stmt in
+      let _ = type_check_stmt var_env func_env struct_env expected_ret_ty then_stmt in
       (match else_opt with
-       | Some else_stmt -> let _ = type_check_stmt var_env func_env struct_env else_stmt in var_env
+       | Some else_stmt -> let _ = type_check_stmt var_env func_env struct_env expected_ret_ty else_stmt in var_env
        | None -> var_env)
-  | SWhile (cond, body) ->
+  | SWhile (cond, body, loc) ->
       let _ = type_of_expr var_env func_env struct_env cond in
-      let _ = type_check_stmt var_env func_env struct_env body in
+      let _ = type_check_stmt var_env func_env struct_env expected_ret_ty body in
       var_env
-  | SFor (init, cond, inc, body) ->
-      let env1 = match init with Some s -> type_check_stmt var_env func_env struct_env s | None -> var_env in
+  | SFor (init, cond, inc, body, loc) ->
+      let env1 = match init with Some s -> type_check_stmt var_env func_env struct_env expected_ret_ty s | None -> var_env in
       (match cond with Some e -> let _ = type_of_expr env1 func_env struct_env e in () | None -> ());
-      (match inc with Some s -> let _ = type_check_stmt env1 func_env struct_env s in () | None -> ());
-      let _ = type_check_stmt env1 func_env struct_env body in
+      (match inc with Some s -> let _ = type_check_stmt env1 func_env struct_env expected_ret_ty s in () | None -> ());
+      let _ = type_check_stmt env1 func_env struct_env expected_ret_ty body in
       var_env
-  | SBreak ->
+  | SBreak loc ->
       var_env
-  | SBlock stmts ->
-      let _ = List.fold_left (fun env stmt -> type_check_stmt env func_env struct_env stmt) var_env stmts in
+  | SBlock (stmts, loc) ->
+      let _ = List.fold_left (fun env stmt -> type_check_stmt env func_env struct_env expected_ret_ty stmt) var_env stmts in
       var_env
 
 (* Build function environment from program *)
@@ -470,15 +424,18 @@ let build_struct_env (prog: global_def list) : struct_env =
 (* Type check a function *)
 let type_check_func (global_var_env: var_env) (func_env: func_env) (struct_env: struct_env) (gdef: global_def) : unit =
   match gdef with
-  | GFuncDef (ret_ty, _, params, body) ->
-      (* Validate return type and parameter types *)
+  | GFuncDef (ret_ty, fname, params, body) ->
       validate_type struct_env ret_ty;
       List.iter (fun (pty, _) -> validate_type struct_env pty) params;
+      
+      (* Get the location from the function body *)
+      let func_line = (stmt_location body).line in
+      
       (* Check for duplicate parameter names *)
       let _ = List.fold_left
         (fun seen (_, name) ->
           if StringSet.mem name seen then
-            raise (TypeError ("Duplicate parameter name: " ^ name, 0))
+            raise (TypeError ("Duplicate parameter name: " ^ name, func_line))
           else
             StringSet.add name seen
         )
@@ -488,10 +445,11 @@ let type_check_func (global_var_env: var_env) (func_env: func_env) (struct_env: 
       (* Start with global variables, then add parameters *)
       let var_env = List.fold_left 
         (fun acc (ty, name) -> StringMap.add name ty acc) 
-        global_var_env  (* Include global variables *)
+        global_var_env
         params 
       in
-      let _ = type_check_stmt var_env func_env struct_env body in
+      (* Pass the function's return type to type_check_stmt for return statement validation *)
+      let _ = type_check_stmt var_env func_env struct_env ret_ty body in
       ()
   | _ -> ()
 

@@ -37,22 +37,45 @@ type expr =
   | EFieldAccess of expr * string (* G-level: obj.field *)
   | EAt of expr * int  (* annotate expression with source line *)
 
+(* Location information *)
+type location = {
+  line: int;
+  column: int;
+}
+
+(* Note: If you need a placeholder location, use { line = 0; column = 0 } directly *)
 
 (* Statements - G-level adds for loop, delete, arrays *)
+(* Each statement now carries its source location *)
 type stmt =
-  | SExpr of expr
-  | SReturn of expr option
-  | SIf of expr * stmt * stmt option
-  | SWhile of expr * stmt
-  | SFor of stmt option * expr option * stmt option * stmt  (* G-level: for loop *)
-  | SBreak
-  | SBlock of stmt list
-  | SVarDef of ty * string * expr option
-  | SAssign of string * expr
-  | SArrayAssign of string * expr * string option * expr  (* G-level: arr[index] = value or arr[index].field = value *)
-  | SFieldAssign of string * string * expr (* G-level: obj.field = value *)
-  | SDelete of string                        (* G-level: delete[] varname *)
+  | SExpr of expr * location
+  | SReturn of expr option * location
+  | SIf of expr * stmt * stmt option * location
+  | SWhile of expr * stmt * location
+  | SFor of stmt option * expr option * stmt option * stmt * location  (* G-level: for loop *)
+  | SBreak of location
+  | SBlock of stmt list * location
+  | SVarDef of ty * string * expr option * location
+  | SAssign of string * expr * location
+  | SArrayAssign of string * expr * string option * expr * location  (* G-level: arr[index] = value or arr[index].field = value *)
+  | SFieldAssign of string * string * expr * location (* G-level: obj.field = value *)
+  | SDelete of string * location                        (* G-level: delete[] varname *)
 
+(* Helper function to extract location from a statement *)
+let stmt_location (s: stmt) : location =
+  match s with
+  | SExpr (_, loc) -> loc
+  | SReturn (_, loc) -> loc
+  | SIf (_, _, _, loc) -> loc
+  | SWhile (_, _, loc) -> loc
+  | SFor (_, _, _, _, loc) -> loc
+  | SBreak loc -> loc
+  | SBlock (_, loc) -> loc
+  | SVarDef (_, _, _, loc) -> loc
+  | SAssign (_, _, loc) -> loc
+  | SArrayAssign (_, _, _, _, loc) -> loc
+  | SFieldAssign (_, _, _, loc) -> loc
+  | SDelete (_, loc) -> loc
 
 type struct_field = ty * string  (* field type and name *)
 

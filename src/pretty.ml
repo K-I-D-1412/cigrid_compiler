@@ -70,36 +70,36 @@ let rec string_of_expr = function
       string_of_expr e  (* EParen is transparent in AST representation *)
 
 let rec string_of_stmt = function
-  | SExpr e -> "SExpr(" ^ (string_of_expr e) ^ ")"
-  | SReturn None -> "SReturn()"
-  | SReturn (Some e) -> "SReturn(" ^ (string_of_expr e) ^ ")"
-  | SIf (e, s1, None) ->
+  | SExpr (e, _loc) -> "SExpr(" ^ (string_of_expr e) ^ ")"
+  | SReturn (None, _loc) -> "SReturn()"
+  | SReturn (Some e, _loc) -> "SReturn(" ^ (string_of_expr e) ^ ")"
+  | SIf (e, s1, None, _loc) ->
       "SIf(" ^ (string_of_expr e) ^ ", " ^ (string_of_stmt s1) ^ ", )"
-  | SIf (e, s1, Some s2) ->
+  | SIf (e, s1, Some s2, _loc) ->
       "SIf(" ^ (string_of_expr e) ^ ", " ^ (string_of_stmt s1) ^ ", " ^ (string_of_stmt s2) ^ ")"
-  | SWhile (e, s) ->
+  | SWhile (e, s, _loc) ->
       "SWhile(" ^ (string_of_expr e) ^ ", " ^ (string_of_stmt s) ^ ")"
-  | SFor (init, cond, update, body) ->
+  | SFor (init, cond, update, body, _loc) ->
       let init_str = match init with None -> "" | Some s -> string_of_stmt s in
       let cond_str = match cond with None -> "" | Some e -> string_of_expr e in
       let update_str = match update with None -> "" | Some s -> string_of_stmt s in
       "SFor(" ^ init_str ^ ", " ^ cond_str ^ ", " ^ update_str ^ ", " ^ (string_of_stmt body) ^ ")"
-  | SBreak -> "SBreak"
-  | SBlock stmts ->
+  | SBreak _loc -> "SBreak"
+  | SBlock (stmts, _loc) ->
       "SScope(" ^ (string_of_list stmts string_of_stmt " ") ^ ")"
-  | SVarDef (t, id, None) ->
+  | SVarDef (t, id, None, _loc) ->
       "SVarDef(" ^ (string_of_ty t) ^ ", \"" ^ id ^ "\")"
-  | SVarDef (t, id, Some e) ->
+  | SVarDef (t, id, Some e, _loc) ->
       "SVarDef(" ^ (string_of_ty t) ^ ", \"" ^ id ^ "\", " ^ (string_of_expr e) ^ ")"
-  | SAssign (id, e) ->
+  | SAssign (id, e, _loc) ->
       "SVarAssign(\"" ^ id ^ "\", " ^ (string_of_expr e) ^ ")"
-  | SArrayAssign (id, idx, None, e) ->
+  | SArrayAssign (id, idx, None, e, _loc) ->
       "SArrayAssign(\"" ^ id ^ "\", " ^ (string_of_expr idx) ^ ", , " ^ (string_of_expr e) ^ ")"
-  | SArrayAssign (id, idx, Some field, e) ->
+  | SArrayAssign (id, idx, Some field, e, _loc) ->
       "SArrayAssign(\"" ^ id ^ "\", " ^ (string_of_expr idx) ^ ", \"" ^ field ^ "\", " ^ (string_of_expr e) ^ ")"
-  | SFieldAssign (id, field, e) ->
+  | SFieldAssign (id, field, e, _loc) ->
       "SFieldAssign(\"" ^ id ^ "\", \"" ^ field ^ "\", " ^ (string_of_expr e) ^ ")"
-  | SDelete id ->
+  | SDelete (id, _loc) ->
       "SDelete(\"" ^ id ^ "\")"
 
 let string_of_param (t, id) =

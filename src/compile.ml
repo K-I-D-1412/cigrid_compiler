@@ -210,12 +210,13 @@ let rec compile_expr env e =
       
       code_idx @ [
         Imul (Reg Rax, Imm stride);   (* byte_offset = index * stride *)
-        Mov (Reg R10, Reg Rax);       (* R10 = byte_offset *)
-        load_base_instr;              (* RAX = base_address *)
-        Add (Reg Rax, Reg R10);       (* RAX = base + offset *)
-        Mov (Reg R10, Reg Rax);       (* R10 = element address *)
-        if stride = 1 then Movzx (Reg Rax, Mem (R10, 0, Byte))  (* Load byte *)
-        else Mov (Reg Rax, Mem (R10, 0, Qword))  (* Load qword *)
+        Mov (Reg R10, Reg Rax);       (* R10 = offset *)
+        load_base_instr;              (* RAX = base address *)
+        Add (Reg R10, Reg Rax);       (* R10 = destination address *)
+        Pop (Reg Rax);                (* RAX = value *)
+        
+        if stride = 1 then Directive "mov byte [r10], al"  (* Store byte *)
+        else Mov (Mem (R10, 0, Qword), Reg Rax)  (* Store qword *)
       ]
 
   | _ -> failwith "Expression not supported"
@@ -228,19 +229,19 @@ let rec compile_expr env e =
 let rec compile_stmt env s =
   match s with
   (* Variable declaration with initialization *)
-  | SVarDef (ty, name, Some expr) ->
+  | SVarDef (ty, name, Some expr, _loc) ->
       let code_expr = compile_expr env expr in
       let (offset, new_env) = allocate name ty env in 
       let code_store = [Mov (Mem (Rbp, -offset, Qword), Reg Rax)] in
       (code_expr @ code_store, new_env)
 
   (* Variable declaration without initialization *)
-  | SVarDef (ty, name, None) ->
+  | SVarDef (ty, name, None, _loc) ->
       let (offset, new_env) = allocate name ty env in 
       ([], new_env)
 
   (* Variable assignment *)
-  | SAssign (name, expr) ->
+  | SAssign (name, expr, _loc) ->
       let code_expr = compile_expr env expr in
       let code_store = match lookup name env with
         | Local (_, off) -> [Mov (Mem (Rbp, -off, Qword), Reg Rax)]
@@ -249,16 +250,16 @@ let rec compile_stmt env s =
       (code_expr @ code_store, env)
 
   (* Return statement with optional value *)
-  | SReturn (Some expr) ->
+  | SReturn (Some expr, _loc) ->
       let code_expr = compile_expr env expr in
       let epilogue = [Mov (Reg Rsp, Reg Rbp); Pop (Reg Rbp); Ret] in
       (code_expr @ epilogue, env)
 
-  | SReturn None ->
+  | SReturn (None, _loc) ->
       ([Mov (Reg Rsp, Reg Rbp); Pop (Reg Rbp); Ret], env)
     
   (* If-else statement *)
-  | SIf (cond, then_stmt, else_opt) ->
+  | SIf (cond, then_stmt, else_opt, _loc) ->
       let label_else = new_label "else" in
       let label_end = new_label "end_if" in
       let code_cond = compile_expr env cond in
@@ -273,7 +274,7 @@ let rec compile_stmt env s =
       (code_cond @ check @ code_then @ code_else_part, env)
 
   (* While loop *)
-  | SWhile (cond, body) ->
+  | SWhile (cond, body, _loc) ->
       let label_start = new_label "while_start" in
       let label_end = new_label "while_end" in
       let code_cond = compile_expr env cond in
@@ -281,19 +282,20 @@ let rec compile_stmt env s =
       let loop = [Label label_start] @ code_cond @ [Cmp (Reg Rax, Imm 0); Je label_end] @ code_body @ [Jmp label_start; Label label_end] in
       (loop, env)
 
-  | SFor (init_opt, cond_opt, step_opt, body) ->
+  | SFor (init_opt, cond_opt, step_opt, body, loc) ->
       let (code_init, env_init) = match init_opt with Some s -> compile_stmt env s | None -> ([], env) in
       let cond_expr = match cond_opt with Some e -> e | None -> EInt 1 in
-      let step_stmt = match step_opt with Some s -> s | None -> SBlock [] in
-      let new_body = SBlock [body; step_stmt] in
-      let (code_loop, final_env) = compile_stmt env_init (SWhile (cond_expr, new_body)) in
+      let step_stmt = match step_opt with Some s -> s | None -> SBlock ([], { line = 0; column = 0 }) in
+      let new_body = SBlock ([body; step_stmt], loc) in
+      let (code_loop, final_env) = compile_stmt env_init (SWhile (cond_expr, new_body, loc)) in
       (code_init @ code_loop, final_env)
 
-  | SBlock stmts -> compile_stmts env stmts
-  | SExpr e -> let code = compile_expr env e in (code, env)
+  | SBlock (stmts, _loc) -> compile_stmts env stmts
+  
+  | SExpr (e, _loc) -> let code = compile_expr env e in (code, env)
 
   (* Delete/free heap memory: delete[] ptr *)
-  | SDelete name ->
+  | SDelete (name, _loc) ->
       let load_ptr_instr = match lookup name env with
         | Local (_, off) -> Mov (Reg Rax, Mem (Rbp, -off, Qword))
         | GlobalVar _ -> Mov (Reg Rax, GlobalMem name)
@@ -301,7 +303,7 @@ let rec compile_stmt env s =
       [load_ptr_instr; Mov (Reg Rdi, Reg Rax); Call "free"], env
 
   (* Array element assignment: arr[index] = value *)
-  | SArrayAssign (name, index_expr, None, val_expr) ->
+  | SArrayAssign (name, index_expr, None, val_expr, _loc) ->
       let code_val = compile_expr env val_expr in  (* value -> RAX *)
       let push_val = [Push (Reg Rax)] in           (* Save value *)
       let code_idx = compile_expr env index_expr in (* index -> RAX *)
@@ -323,7 +325,11 @@ let rec compile_stmt env s =
         else Mov (Mem (R10, 0, Qword), Reg Rax)  (* Store qword *)
       ], env
 
-  | _ -> failwith "Statement not supported"
+  | SBreak _loc -> failwith "Break statement not supported in code generation"
+  
+  | SArrayAssign (_, _, Some _, _, _loc) -> failwith "Array field assignment not supported"
+  
+  | SFieldAssign (_, _, _, _loc) -> failwith "Field assignment not supported"
 
 (* Compile list of statements sequentially *)
 and compile_stmts env stmts =
@@ -363,7 +369,7 @@ let compile_func g_def =
       let (env_with_params, param_instrs) = compile_params params empty_env in
       
       (* Compile function body *)
-      let stmts = match body with SBlock ss -> ss | _ -> [body] in
+      let stmts = match body with SBlock (ss, _) -> ss | _ -> [body] in
       let (body_code, final_env) = compile_stmts env_with_params stmts in
       
       (* Calculate stack size (16-byte aligned for AMD64 ABI) *)

@@ -15,6 +15,10 @@
     | _ -> failwith "Not a unary operator token"
 
   let with_pos e pos = EAt(e, pos.Lexing.pos_lnum)
+  
+  (* Helper to create location from position *)
+  let make_location pos = 
+    { line = pos.Lexing.pos_lnum; column = pos.Lexing.pos_cnum - pos.Lexing.pos_bol }
 %}
 
 %token <int> UINT
@@ -66,7 +70,10 @@ global_defs:
 
 global_def:
   | ty IDENT LPAREN params RPAREN LBRACE stmts RBRACE
-    { GFuncDef($1, $2, $4, SBlock($7)) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 6) in
+      GFuncDef($1, $2, $4, SBlock($7, loc)) 
+    }
   | EXTERN ty IDENT LPAREN params RPAREN SEMI
     { GFuncDecl($2, $3, $5) }
   | EXTERN ty IDENT SEMI
@@ -117,68 +124,163 @@ stmts:
 ;
 
 stmt:
-  | expr SEMI { SExpr($1) }
-  | LBRACE stmts RBRACE { SBlock($2) }
-  | DELETE LBRACKET RBRACKET IDENT SEMI { SDelete($4) }
-  | RETURN SEMI { SReturn(None) }
-  | RETURN expr SEMI { SReturn(Some $2) }
+  | expr SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SExpr($1, loc) 
+    }
+  | LBRACE stmts RBRACE 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SBlock($2, loc) 
+    }
+  | DELETE LBRACKET RBRACKET IDENT SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SDelete($4, loc) 
+    }
+  | RETURN SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SReturn(None, loc) 
+    }
+  | RETURN expr SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SReturn(Some $2, loc) 
+    }
   | IF LPAREN expr RPAREN stmt
-    { SIf($3, $5, None) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SIf($3, $5, None, loc) 
+    }
   | IF LPAREN expr RPAREN stmt ELSE stmt
-    { SIf($3, $5, Some $7) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SIf($3, $5, Some $7, loc) 
+    }
   | WHILE LPAREN expr RPAREN stmt
-    { SWhile($3, $5) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SWhile($3, $5, loc) 
+    }
   | FOR LPAREN for_init for_cond for_update RPAREN stmt
     { 
-      (* Desugar: for(init; cond; update) body => {init; while(cond) {body; update}} *)
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      let init_loc = make_location (Parsing.rhs_start_pos 3) in
       let init_stmts = match $3 with None -> [] | Some s -> [s] in
       let cond = match $4 with None -> EInt(1) | Some e -> e in
       let update_stmt = match $5 with None -> [] | Some s -> [s] in
       let body_stmts = [$7] @ update_stmt in
-      let while_loop = SWhile(cond, SBlock(body_stmts)) in
-      SBlock(init_stmts @ [while_loop])
+      let while_loop = SWhile(cond, SBlock(body_stmts, loc), loc) in
+      SBlock(init_stmts @ [while_loop], loc)
     }
   | BREAK SEMI
-    { SBreak }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SBreak(loc) 
+    }
   | ty IDENT LBRACKET UINT RBRACKET SEMI
-    { SVarDef(TArray($1, $4), $2, None) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SVarDef(TArray($1, $4), $2, None, loc) 
+    }
   | ty IDENT LBRACKET UINT RBRACKET ASSIGN expr SEMI
-    { SVarDef(TArray($1, $4), $2, Some $7) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SVarDef(TArray($1, $4), $2, Some $7, loc) 
+    }
   | ty IDENT SEMI
-    { SVarDef($1, $2, None) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SVarDef($1, $2, None, loc) 
+    }
   | ty IDENT ASSIGN expr SEMI
-    { SVarDef($1, $2, Some $4) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SVarDef($1, $2, Some $4, loc) 
+    }
   | IDENT LBRACKET expr RBRACKET DOT IDENT ASSIGN expr SEMI
-    { SArrayAssign($1, $3, Some $6, $8) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SArrayAssign($1, $3, Some $6, $8, loc) 
+    }
   | IDENT LBRACKET expr RBRACKET ASSIGN expr SEMI
-    { SArrayAssign($1, $3, None, $6) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SArrayAssign($1, $3, None, $6, loc) 
+    }
   | IDENT LBRACKET expr RBRACKET DOT IDENT PLUSPLUS SEMI
-    { SArrayAssign($1, $3, Some $6, EBinOp(Add, EArrayAccess($1, $3, Some $6), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SArrayAssign($1, $3, Some $6, EBinOp(Add, EArrayAccess($1, $3, Some $6), EInt(1)), loc) 
+    }
   | IDENT LBRACKET expr RBRACKET DOT IDENT MINUSMINUS SEMI
-    { SArrayAssign($1, $3, Some $6, EBinOp(Sub, EArrayAccess($1, $3, Some $6), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SArrayAssign($1, $3, Some $6, EBinOp(Sub, EArrayAccess($1, $3, Some $6), EInt(1)), loc) 
+    }
   | IDENT LBRACKET expr RBRACKET PLUSPLUS SEMI
-    { SArrayAssign($1, $3, None, EBinOp(Add, EArrayAccess($1, $3, None), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SArrayAssign($1, $3, None, EBinOp(Add, EArrayAccess($1, $3, None), EInt(1)), loc) 
+    }
   | IDENT LBRACKET expr RBRACKET MINUSMINUS SEMI
-    { SArrayAssign($1, $3, None, EBinOp(Sub, EArrayAccess($1, $3, None), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SArrayAssign($1, $3, None, EBinOp(Sub, EArrayAccess($1, $3, None), EInt(1)), loc) 
+    }
   | IDENT ASSIGN expr SEMI
-    { SAssign($1, $3) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SAssign($1, $3, loc) 
+    }
   | IDENT PLUSPLUS SEMI
-    { SAssign($1, EBinOp(Add, EVar($1), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SAssign($1, EBinOp(Add, EVar($1), EInt(1)), loc) 
+    }
   | IDENT MINUSMINUS SEMI
-    { SAssign($1, EBinOp(Sub, EVar($1), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SAssign($1, EBinOp(Sub, EVar($1), EInt(1)), loc) 
+    }
   | PLUSPLUS IDENT SEMI
-    { SAssign($2, EBinOp(Add, EVar($2), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SAssign($2, EBinOp(Add, EVar($2), EInt(1)), loc) 
+    }
   | MINUSMINUS IDENT SEMI
-    { SAssign($2, EBinOp(Sub, EVar($2), EInt(1))) }
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      SAssign($2, EBinOp(Sub, EVar($2), EInt(1)), loc) 
+    }
 ;
 
 (* For loop components *)
 for_init:
-  | SEMI { None }
-  | ty IDENT SEMI { Some (SVarDef($1, $2, None)) }
-  | ty IDENT ASSIGN expr SEMI { Some (SVarDef($1, $2, Some $4)) }
-  | IDENT ASSIGN expr SEMI { Some (SAssign($1, $3)) }
-  | expr SEMI { Some (SExpr($1)) }
+  | SEMI 
+    { None }
+  | ty IDENT SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SVarDef($1, $2, None, loc)) 
+    }
+  | ty IDENT ASSIGN expr SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SVarDef($1, $2, Some $4, loc)) 
+    }
+  | IDENT ASSIGN expr SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SAssign($1, $3, loc)) 
+    }
+  | expr SEMI 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SExpr($1, loc)) 
+    }
 ;
 
 for_cond:
@@ -188,12 +290,36 @@ for_cond:
 
 for_update:
   | /* empty */ { None }
-  | IDENT ASSIGN expr { Some (SAssign($1, $3)) }
-  | IDENT PLUSPLUS { Some (SAssign($1, EBinOp(Add, EVar($1), EInt(1)))) }
-  | IDENT MINUSMINUS { Some (SAssign($1, EBinOp(Sub, EVar($1), EInt(1)))) }
-  | PLUSPLUS IDENT { Some (SAssign($2, EBinOp(Add, EVar($2), EInt(1)))) }
-  | MINUSMINUS IDENT { Some (SAssign($2, EBinOp(Sub, EVar($2), EInt(1)))) }
-  | expr { Some (SExpr($1)) }
+  | IDENT ASSIGN expr 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SAssign($1, $3, loc)) 
+    }
+  | IDENT PLUSPLUS 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SAssign($1, EBinOp(Add, EVar($1), EInt(1)), loc)) 
+    }
+  | IDENT MINUSMINUS 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SAssign($1, EBinOp(Sub, EVar($1), EInt(1)), loc)) 
+    }
+  | PLUSPLUS IDENT 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SAssign($2, EBinOp(Add, EVar($2), EInt(1)), loc)) 
+    }
+  | MINUSMINUS IDENT 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SAssign($2, EBinOp(Sub, EVar($2), EInt(1)), loc)) 
+    }
+  | expr 
+    { 
+      let loc = make_location (Parsing.rhs_start_pos 1) in
+      Some (SExpr($1, loc)) 
+    }
 ;
 
 expr:

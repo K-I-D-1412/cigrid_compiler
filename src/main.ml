@@ -94,28 +94,28 @@ let rec check_expr (defined_structs: string list) (e: expr) : bool =
 (* Check all types in a statement *)
 let rec check_stmt (defined_structs: string list) (s: stmt) : bool =
   match s with
-  | SExpr e -> check_expr defined_structs e
-  | SReturn e_opt -> 
+  | SExpr (e, _loc) -> check_expr defined_structs e
+  | SReturn (e_opt, _loc) -> 
       (match e_opt with None -> true | Some e -> check_expr defined_structs e)
-  | SIf (cond, then_s, else_opt) ->
+  | SIf (cond, then_s, else_opt, _loc) ->
       check_expr defined_structs cond && check_stmt defined_structs then_s &&
       (match else_opt with None -> true | Some s -> check_stmt defined_structs s)
-  | SWhile (cond, body) -> check_expr defined_structs cond && check_stmt defined_structs body
-  | SFor (init_opt, cond_opt, update_opt, body) ->
+  | SWhile (cond, body, _loc) -> check_expr defined_structs cond && check_stmt defined_structs body
+  | SFor (init_opt, cond_opt, update_opt, body, _loc) ->
       (match init_opt with None -> true | Some s -> check_stmt defined_structs s) &&
       (match cond_opt with None -> true | Some e -> check_expr defined_structs e) &&
       (match update_opt with None -> true | Some s -> check_stmt defined_structs s) &&
       check_stmt defined_structs body
-  | SBreak -> true
-  | SBlock stmts -> List.for_all (check_stmt defined_structs) stmts
-  | SVarDef (t, _, e_opt) ->
+  | SBreak _loc -> true
+  | SBlock (stmts, _loc) -> List.for_all (check_stmt defined_structs) stmts
+  | SVarDef (t, _, e_opt, _loc) ->
       check_type defined_structs t &&
       (match e_opt with None -> true | Some e -> check_expr defined_structs e)
-  | SAssign (_, e) -> check_expr defined_structs e
-  | SArrayAssign (_, e_index, _, e_value) -> 
+  | SAssign (_, e, _loc) -> check_expr defined_structs e
+  | SArrayAssign (_, e_index, _, e_value, _loc) -> 
       check_expr defined_structs e_index && check_expr defined_structs e_value
-  | SFieldAssign (_, _, e) -> check_expr defined_structs e
-  | SDelete _ -> true
+  | SFieldAssign (_, _, e, _loc) -> check_expr defined_structs e
+  | SDelete (_, _loc) -> true
 
 (* Check all types in a global definition *)
 let check_global (defined_structs: string list) (g: global_def) : bool =
@@ -142,21 +142,6 @@ let check_program (prog: global_def list) : bool =
 let () =
   let (filename, should_pretty_print, line_error_mode, generate_asm, do_liveness, do_name_analysis, do_type_check) = parse_args () in
 
-  (* Load source lines for heuristic line reporting *)
-  let file_lines =
-    let ic = open_in filename in
-    let rec loop acc =
-      try
-        let l = input_line ic in
-        loop (l :: acc)
-      with End_of_file ->
-        close_in ic;
-        Array.of_list (List.rev acc)
-    in
-    loop []
-  in
-  if line_error_mode then Semantic.set_source_lines file_lines else Semantic.set_source_lines [||];
-  
   let in_channel = 
     try open_in filename
     with Sys_error msg -> 
@@ -181,16 +166,14 @@ let () =
         exit 0
       with
       | Semantic.NameError (msg, line) ->
-          if line_error_mode && line > 0 then
-            prerr_endline (string_of_int line)
+          if line_error_mode then
+            (if line > 0 then prerr_endline (string_of_int line))
           else
             prerr_endline ("Name error: " ^ msg);
           exit 2
       | Semantic.SemanticError (msg, line) ->
-          if line_error_mode && line > 0 then
-            prerr_endline (string_of_int line)
-          else if line_error_mode then
-            prerr_endline "2"
+          if line_error_mode then
+            (if line > 0 then prerr_endline (string_of_int line))
           else
             prerr_endline ("Semantic error: " ^ msg);
           exit 2
@@ -204,25 +187,19 @@ let () =
       with
       | Semantic.TypeError (msg, line) ->
           if line_error_mode then
-            (match (if line > 0 then Some line else Semantic.guess_error_line msg) with
-             | Some l -> prerr_endline (string_of_int l)
-             | None -> ())
+            (if line > 0 then prerr_endline (string_of_int line))
           else
             prerr_endline ("Type error: " ^ msg);
           exit 2
       | Semantic.NameError (msg, line) ->
           if line_error_mode then
-            (match (if line > 0 then Some line else Semantic.guess_error_line msg) with
-             | Some l -> prerr_endline (string_of_int l)
-             | None -> ())
+            (if line > 0 then prerr_endline (string_of_int line))
           else
             prerr_endline ("Name error: " ^ msg);
           exit 2
       | Semantic.SemanticError (msg, line) ->
           if line_error_mode then
-            (match (if line > 0 then Some line else Semantic.guess_error_line msg) with
-             | Some l -> prerr_endline (string_of_int l)
-             | None -> ())
+            (if line > 0 then prerr_endline (string_of_int line))
           else
             prerr_endline ("Semantic error: " ^ msg);
           exit 2
